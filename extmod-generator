@@ -14,7 +14,7 @@ import templates
 
 class Function(object):
 
-    def __init__(self, name, argspec, classname=None):
+    def __init__(self, name, func, classname=None):
         self.name = name
         self.classname = classname
         if classname:
@@ -23,8 +23,27 @@ class Function(object):
         else:
             self.fullname = name
             self.dotname = name
+        
+        self.func = func
+        argspec = inspect.getfullargspec(func)
         self.argspec = argspec
         args = argspec.args
+        n_args = 0
+        n_defaults = 0
+        n_kwargs = 0
+        n_kwdefaults = 0
+
+        if argspec.args is not None:
+            n_args = len(argspec.args)
+        if argspec.kwonlyargs is not None:
+            n_kwargs = len(argspec.kwonlyargs)
+        if argspec.defaults is not None:
+            n_defaults = len(argspec.defaults)
+        if argspec.kwonlydefaults is not None:
+            n_kwdefaults = len(argspec.kwonlydefaults)
+
+        self.args_min = n_args + n_kwargs - n_defaults - n_kwdefaults
+        self.args_max = n_args + n_kwargs
 
         if argspec.varargs is None and argspec.varkw is None and argspec.defaults is None:
             if len(args) >= 0 and len(args) <= 3:
@@ -85,8 +104,8 @@ class Class(object):
         self.name = name
         self.methods = []
 
-    def add_method(self, name, argspec):
-        m = Function(name, argspec, classname=self.name)
+    def add_method(self, name, func):
+        m = Function(name, func, classname=self.name)
         self.methods.append(m)
 
 
@@ -106,14 +125,14 @@ class Module(object):
         for n in dir(self.module):
             a = getattr(self.module, n)
             if isinstance(a, types.FunctionType): # function
-                f = Function(n, inspect.getfullargspec(a))
+                f = Function(n, a)
                 self.functions.append(f)
             elif isinstance(a, type): # class
                 c = Class(n)
                 for m in dir(a):
                     b = getattr(a, m)
                     if isinstance(b, types.FunctionType): # method
-                        c.add_method(m, inspect.getfullargspec(b))
+                        c.add_method(m, b)
                 self.classes.append(c)
         print('Parsed OK ... loaded {f} functions and {c} classes with {m} methods'.format(f=len(self.functions), c=len(self.classes), m=sum([ len(c.methods) for c in self.classes ])))
 
@@ -157,7 +176,20 @@ class Source(object):
 
 
 def generate_function(src, f):
+    #print('f=' + str(dir(f)))
+    #print('argspec=' + str(f.argspec))
 
+    sig = inspect.signature(f.func)
+
+    for param in sig.parameters.values():
+        if(param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD):
+            f.type = 'kw'
+
+    if(f.func.__doc__ is not None):
+        src.append(f'//-- {f.name}')
+        for line in f.func.__doc__.splitlines():
+            if('<code>' not in line):
+                src.append(f'//    {line}')
     src.append('// ' + f.get_prototype())
 
     # special case for constructor
@@ -179,6 +211,13 @@ def generate_function(src, f):
             src.append('    mp_arg_check_num(n_args, n_kw, {args_min}, 999, true);', args_min=f.args_min - 1)
         src.append('    mp_obj_{classname}_t *o = m_new_obj(mp_obj_{classname}_t);', classname=f.classname)
         src.append('    o->base.type = type;')
+        if(f.func.__doc__ is not None):
+            for line in f.func.__doc__.splitlines():
+                try:
+                    offset = line.index('<code>')
+                    src.append(f'{line[offset+6:]}')
+                except:
+                    pass
         src.append('    return MP_OBJ_FROM_PTR(o);')
         src.append('}}')
         src.append('')
@@ -200,6 +239,68 @@ def generate_function(src, f):
         src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *args, mp_map_t *kw_args) {{', function=f.fullname)
     else:
         raise Exception('Unknown function type: {type}'.format(type=f.type))
+
+    # add argument checks and reading of values
+    if(True):
+        if f.type == '0':
+            pass # should not happen
+        elif f.type == '1':
+            #src.append('    mp_arg_check_num(n_args, n_kw, 0, 0, false);')
+            pass
+        elif f.type == '2':
+            #src.append('    mp_arg_check_num(n_args, n_kw, 1, 1, false);')
+            pass
+        elif f.type == '3':
+            #src.append('    mp_arg_check_num(n_args, n_kw, 2, 2, false);')
+            pass
+        elif f.type == 'var':
+            #src.append('    mp_arg_check_num(n_args, 0, {args_min}, 999, false);', args_min=f.args_min)
+            src.append(f'    enum {{{{ ' + str(''.join([f'ARG_{k}, ' for k in sig.parameters]))+ '}};')
+            pass
+        elif f.type == 'var_between':
+            #src.append('    mp_arg_check_num(n_args, 0, {args_min}, {args_max}, false);', args_min=f.args_min, args_max=f.args_max)
+            src.append(f'    enum {{{{ ' + str(''.join([f'ARG_{k}, ' for k in sig.parameters]))+ '}};')
+            pass
+        elif f.type == 'kw':
+            #src.append('    mp_arg_check_num(n_args, 999, {args_min}, 999, true);', args_min=f.args_min)
+            src.append(f'    enum {{{{ ' + str(''.join([f'ARG_{k}, ' for k in sig.parameters]))+ '}};')
+            pass
+    
+    if(False):
+        shortened_types = {
+            int: "int",
+            object: "obj",
+            None: "null",
+            bool: "bool",
+            str: "obj",
+        }
+        args = []
+        for name, param in sig.parameters.items():
+            if param.kind in [param.POSITIONAL_OR_KEYWORD, param.POSITIONAL_ONLY]:
+                arg_type = "MP_ARG_REQUIRED"
+            else:
+                arg_type = "MP_ARG_KW_ONLY"
+            if param.annotation is not inspect._empty:
+                type_txt = shortened_types[param.annotation]
+            else:
+                type_txt = shortened_types[object]
+            if param.default is inspect._empty:
+                default = ""
+            elif param.default is None:
+                default = f"{{ .u_{type_txt} = MP_OBJ_NULL }}"
+            else:
+                default = f"{{ .u_{type_txt} = {param.default} }}"
+            args.append(f"{{ MP_QSTR_{name}, {arg_type} | MP_ARG_{type_txt.upper()}, {default} }},")
+        args = "\n        ".join(args)
+        src.append('    STATIC const mp_arg_t {module}_{function}_allowed_args[] = {{\n        {args}\n    }};', function=f.fullname, args=args)
+
+    if(f.func.__doc__ is not None):
+        for line in f.func.__doc__.splitlines():
+            try:
+                offset = line.index('<code>')
+                src.append(f'{line[offset+6:]}')
+            except:
+                pass
 
     src.append('    // TODO')
     src.append('    return mp_const_none;')
@@ -261,7 +362,15 @@ def generate(module, force=False):
 
     print('Generating source code:')
     src = Source(module)
-    
+
+    if(module.module.__doc__ is not None):
+        for line in module.module.__doc__.splitlines():
+            try:
+                offset = line.index('<code>')
+                src.append(f'{line[offset+6:]}')
+            except:
+                pass
+
     src.append('#include "py/obj.h"')
     src.append('#include "py/runtime.h"')
     src.append('')
