@@ -181,6 +181,8 @@ def generate_function(src, f):
 
     sig = inspect.signature(f.func)
 
+    #print('sig.parameters='+str(sig.parameters))
+
     for param in sig.parameters.values():
         if(param.kind == param.KEYWORD_ONLY or param.kind == param.VAR_KEYWORD):
             f.type = 'kw'
@@ -232,11 +234,11 @@ def generate_function(src, f):
     elif f.type == '3':
         src.append('STATIC mp_obj_t mod_{module}_{function}(mp_obj_t {args[0]}, mp_obj_t {args[1]}, mp_obj_t {args[2]}) {{', function=f.fullname, args=f.argspec.args)
     elif f.type == 'var':
-        src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *args) {{', function=f.fullname)
+        src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *pos_args) {{', function=f.fullname)
     elif f.type == 'var_between':
-        src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *args) {{', function=f.fullname)
+        src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *pos_args) {{', function=f.fullname)
     elif f.type == 'kw':
-        src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *args, mp_map_t *kw_args) {{', function=f.fullname)
+        src.append('STATIC mp_obj_t mod_{module}_{function}(size_t n_args, const mp_obj_t *pos_args, mp_map_t *kw_args) {{', function=f.fullname)
     else:
         raise Exception('Unknown function type: {type}'.format(type=f.type))
 
@@ -265,14 +267,16 @@ def generate_function(src, f):
             #src.append('    mp_arg_check_num(n_args, 999, {args_min}, 999, true);', args_min=f.args_min)
             src.append(f'    enum {{{{ ' + str(''.join([f'ARG_{k}, ' for k in sig.parameters]))+ '}};')
             pass
-    
-    if(False):
+
+    if(True):
         shortened_types = {
             int: "int",
             object: "obj",
             None: "null",
             bool: "bool",
             str: "obj",
+            bytes: "obj",
+            tuple: "obj",
         }
         args = []
         for name, param in sig.parameters.items():
@@ -288,11 +292,17 @@ def generate_function(src, f):
                 default = ""
             elif param.default is None:
                 default = f"{{ .u_{type_txt} = MP_OBJ_NULL }}"
+            elif param.default is False:
+                default = f"{{ .u_{type_txt} = MP_ROM_FALSE }}"
+            elif param.default is True:
+                default = f"{{ .u_{type_txt} = MP_ROM_TRUE }}"
             else:
                 default = f"{{ .u_{type_txt} = {param.default} }}"
             args.append(f"{{ MP_QSTR_{name}, {arg_type} | MP_ARG_{type_txt.upper()}, {default} }},")
         args = "\n        ".join(args)
-        src.append('    STATIC const mp_arg_t {module}_{function}_allowed_args[] = {{\n        {args}\n    }};', function=f.fullname, args=args)
+        src.append('    STATIC const mp_arg_t allowed_args[] = {{\n        {args}\n    }};', function=f.fullname, args=args)
+        src.append('    mp_arg_val_t args[MP_ARRAY_SIZE(allowed_args)];')
+        src.append('    mp_arg_parse_all(n_args, pos_args, kw_args, MP_ARRAY_SIZE(allowed_args), allowed_args, args);')
 
     if(f.func.__doc__ is not None):
         for line in f.func.__doc__.splitlines():
